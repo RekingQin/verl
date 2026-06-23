@@ -23,6 +23,7 @@
 | 12 | decorator.py 设计与 dispatch 机制详解 | [12-decorator与dispatch机制详解.md](12-decorator与dispatch机制详解.md) |
 | 13 | 异步训练方案对比（主链路 / one_step_off / fully_async） | [13-异步训练方案对比.md](13-异步训练方案对比.md) |
 | 14 | Ray 使用技法全景手册（全仓库 use-case / API cookbook） | [14-Ray使用技法全景手册.md](14-Ray使用技法全景手册.md) |
+| 15 | 训练后端（FSDP/Megatron）与优化器配置 | [15-训练后端与优化器配置.md](15-训练后端与优化器配置.md) |
 
 ## 源码导航速查
 
