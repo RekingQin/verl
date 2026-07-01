@@ -24,6 +24,7 @@
 | 13 | 异步训练方案对比（主链路 / one_step_off / fully_async） | [13-异步训练方案对比.md](13-异步训练方案对比.md) |
 | 14 | Ray 使用技法全景手册（全仓库 use-case / API cookbook） | [14-Ray使用技法全景手册.md](14-Ray使用技法全景手册.md) |
 | 15 | 训练后端（FSDP/Megatron）与优化器配置 | [15-训练后端与优化器配置.md](15-训练后端与优化器配置.md) |
+| 16 | 显存卸载与 vLLM 睡眠/唤醒机制（offload / sleep-wake / cudagraph） | [16-显存卸载与vLLM睡眠唤醒机制.md](16-显存卸载与vLLM睡眠唤醒机制.md) |
 
 ## 源码导航速查
 
