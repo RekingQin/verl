@@ -110,3 +110,62 @@ cudagraph。
 - CUDA graph 不需重新 capture：sleep/wake 基于 CuMemAllocator 物理换页、保留虚拟地址，cudagraph
   绑定虚拟地址故仍有效。
 - 默认 sleep level 2（权重丢弃 + 重灌），level 1 仅在 NPU / layered_summon / 旧版本 EP 场景。
+
+## 六、Megatron 场景：actor 权重与 rollout 显存"共用"
+
+「共用」不是同时读写同一份权重，而是 hybrid colocate 下 actor 训练与 vLLM 推理**时分复用
+同一块物理显存**——任一时刻只有一方占用 GPU。Megatron 的分片权重同步方式让这个复用更彻底。
+
+### 6.1 核心考量
+
+hybrid engine colocate（`replica.py::init_hybrid_colocated`）下，actor(Megatron) 与 vLLM 跑在
+同一批 GPU。若显存常驻叠加：`actor(参数+梯度+fp32优化器) + vLLM(权重+KV cache)` 远超单卡容量，
+故必须错峰共用。
+
+### 6.2 RL 单步显存时间线（`engine_workers.py::update_weights`）
+
+```
+========== 训练阶段 ==========
+actor: 参数+梯度+优化器 占满 GPU
+vLLM : sleep（释放显存，仅保留虚拟地址）              ← 要素①
+
+========== 权重同步（过渡）==========
+1. set_expandable_segments(False)
+2. rollout.resume(tags=["weights"])                  # vLLM 唤醒权重显存
+3. get_per_tensor_param(): load actor→GPU + 流式导出  ← 要素③
+4. update_weights(): 流式传给 vLLM（CUDA IPC）        ← 要素④
+5. actor.engine.to("cpu")                            # actor 权重 offload  ← 要素②
+6. aggressive_empty_cache(force_sync=True)
+7. rollout.resume(tags=["kv_cache"])                 # 最后才唤醒 KV cache
+
+========== rollout 阶段 ==========
+actor: offload 到 CPU（显存腾空）
+vLLM : 权重 + KV cache 占满 GPU
+```
+
+### 6.3 实现四要素
+
+- **① vLLM sleep/wake**：训练阶段 vLLM sleep 释放显存（见本文二、三节）。
+- **② Megatron param_offload**：`actor.megatron.param_offload/optimizer_offload/grad_offload`，
+  rollout 前把训练张量搬 CPU；Megatron offload 粒度细（bf16 param / fp32 grad / fp32 main param /
+  fp32 优化器状态分别搬运）。
+- **③ 流式权重同步 `per_tensor_generator`（Megatron 关键特殊点）**：Megatron 权重是
+  TP/PP/EP/VPP 多维分片，格式与 vLLM 的 HF 格式不同需 resharding。若一次性整模型转换，会在显存中
+  额外产生一份完整 HF 权重副本使峰值翻倍。`per_tensor_generator`（`megatron_utils.py`）用
+  generator **逐张量惰性 yield**，按 PP/VPP 顺序处理、EP all_gather 专家权重后逐个转换，vLLM 侧
+  `BucketedWeightReceiver` 按 bucket 接收即 `load_weights` 写入并释放临时张量。于是显存中**从不
+  存在完整第二份 HF 权重**，同步峰值仅一个 `update_weights_bucket_megabytes` 桶大小。
+- **④ CUDA IPC 零拷贝**：colocate 同节点不同进程，权重经 CUDA IPC handle 传递
+  （`update_weights_from_ipc`），vLLM 直接映射 actor 进程显存 tensor，无额外拷贝。
+
+### 6.4 时序精妙处
+
+第 5、7 步顺序为「**先 offload actor + empty_cache，再 resume KV cache**」：KV cache 是 vLLM
+显存大头，放在 actor 完全腾空后分配，才能拿到最大可用显存（`gpu_memory_utilization` 可设高）。
+训练态张量与 KV cache 完全错峰，从不同时占用。
+
+### 6.5 一句话总结
+
+> 「共用」= hybrid colocate 下 actor 与 vLLM 时分复用同一物理显存；Megatron 通过 `param_offload`
+> （训练侧腾空）+ vLLM `sleep`（推理侧腾空）+ `per_tensor_generator` 流式分片转换（同步时不产生
+> 完整第二份权重）+ CUDA IPC 零拷贝，四者配合实现峰值不叠加。
