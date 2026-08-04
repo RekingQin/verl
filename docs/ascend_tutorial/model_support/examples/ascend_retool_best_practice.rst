@@ -1,12 +1,12 @@
-Ascend Retool Best Practice
+Ascend ReTool Best Practice
 ===================================
 
-Last updated: 03/01/2026.
+Last updated: 07/03/2026.
 
 引言
 ----------------------------------
 
-Retool论文参考([Retool](https://arxiv.org/pdf/2504.11536))
+ReTool论文参考([ReTool](https://arxiv.org/pdf/2504.11536))
 集成代码解释器工具，通过多轮实时代码执行进行策略部署，并教会模型根据结果反馈学习何时以及如何调用工具。
 
 1. 环境构建
@@ -14,38 +14,53 @@ Retool论文参考([Retool](https://arxiv.org/pdf/2504.11536))
 
 用例模型脚本以及其需要的硬件条件各自如下：
 
-===============    ============    ============    ===============
-模型                NPU型号         节点数量        训练与推理后端
-===============    ============    ============    ===============
-``Qwen2.5-7B``     Atlas 900 A2         1          ``vllm + FSDP``
-===============    ============    ============    ===============
+.. list-table::
+   :header-rows: 1
+
+   * - 模型
+     - NPU型号
+     - 节点数量
+     - 训练与推理后端
+   * - ``Qwen2.5-7B``
+     - Atlas 900 A2
+     - 1
+     - ``vLLM + FSDP``
 
 环境构建
 -----------------------------------
-1.从自定义Conda环境进行构建
+1. 从自定义Conda环境进行构建
 
-============    ============================================================
-software        version 
-============    ============================================================
-Python          ``>=3.10, <3.12``
-CANN            ``==8.3.RC1``
-torch           ``==2.7.1``
-torch_npu       ``==2.7.1``
-verl            ``v0.6.1 commitId=d62da4950573d7a4b7ef2362337952e7ab59e78d``
-vllm            ``v0.11.0``
-vllm-ascend     ``v0.11.0-dev``
-transformers    ``4.57.6``
-============    ============================================================
+.. list-table::
+   :header-rows: 1
+
+   * - software
+     - version
+   * - Python
+     - ``3.11``
+   * - CANN
+     - ``==9.0.0.B160`` (CANN900B160)
+   * - torch
+     - ``==2.9.0``
+   * - torch_npu
+     - ``==2.9.0``
+   * - triton_ascend
+     - ``==3.2.1``
+   * - verl
+     - ``main``
+   * - vllm
+     - ``v0.18.0``
+   * - vllm-ascend
+     - ``v0.18.0``
+   * - transformers
+     - ``5.3.0``
 
 模型训练与评估
 -----------------------------------
-1.模型数据准备
+1. 模型数据准备
 ^^^^^^^^^^^
 `Qwen2.5-7B`
 ^^^^^^^^^^^
 **下载模型权重**
-
---local-dir: 模型保存路径
 
 .. code-block:: bash
 
@@ -63,13 +78,13 @@ transformers    ``4.57.6``
 
   git clone https://huggingface.co/datasets/Maxwell-Jia/AIME_2024
 
-**下载预训练数据集**
+**预训练数据预处理**
 
 .. code-block:: bash
 
   python3 recipe/retool/retool_sft_preprocess.py
 
-*注:自动下载ReTool-SFT，最后生成数据默认保存在~/ReTool-SFT/data目录下*
+*注：自动下载ReTool-SFT，最后生成数据默认保存在~/ReTool-SFT/data目录下*
 
 **执行预训练脚本**
 
@@ -85,7 +100,7 @@ transformers    ``4.57.6``
       --local_dir /PATH/TO/checkpoint/multiturn-sft-qwen-2.5-7b-instruct/global_step_372 \
       --target_dir /PATH/TO/checkpoint/multiturn-sft-qwen-2.5-7b-instruct/global_step_372/huggingface
 
-2.代码沙箱准备
+2. 代码沙箱准备
 
 开源沙箱代码及部署参考
 https://github.com/bytedance/SandboxFusion
@@ -112,7 +127,7 @@ https://github.com/bytedance/SandboxFusion
   cd ../../
   make run-online
 
-3.训练
+3. 训练
 
 示例配置文件如下，在recipe/retool目录下创建一个run_qwen2.5_7b_dapo_npu.sh
 根据开发者实际路径配置情况修改模型训练脚本中的以下参数
