@@ -2,7 +2,7 @@
 
 > 返回索引：[README.md](README.md)
 > 关联阅读：[10-Ray串联机制详解.md](10-Ray串联机制详解.md)（远程调用全链路）、[11-算法配置与跨Worker数据流转.md](11-算法配置与跨Worker数据流转.md)
-> 源码：`verl/single_controller/base/decorator.py`（444 行）
+> 源码：`verl/single_controller/base/decorator.py`（约 445 行）
 
 ---
 
@@ -124,13 +124,13 @@ def collect_nd_compute(collect_mask, worker_group, output):
     return [output[r] for r in range(world_size) if collect_mask[r]]
 ```
 
-`dp_rank_mapping` / `collect_mask` 从哪来？**惰性查询**（`dispatch_lazy_compute_data_proto`，:266）：第一次调用某 mesh 的方法时，向各 worker 查询并缓存：
+`dp_rank_mapping` / `collect_mask` 从哪来？**惰性查询**（`dispatch_lazy_compute_data_proto`，:266；`make_nd_compute_dataproto_dispatch_fn` @ :300）：第一次调用某 mesh 的方法时，向各 worker 查询并缓存：
 ```python
 def make_nd_compute_dataproto_dispatch_fn(mesh_name):
     return {"dispatch_fn": partial(dispatch_lazy_compute_data_proto, mesh_name),
             "collect_fn":  partial(collect_lazy_compute_data_proto, mesh_name)}
 ```
-而 worker 侧在初始化时登记自己的 DP 拓扑（engine_workers.py:137 `_register_dispatch_collect_info(mesh_name="train", dp_rank, is_collect)`）。
+而 worker 侧在初始化时登记自己的 DP 拓扑（`_register_dispatch_collect_info` 定义于 `single_controller/base/worker.py:86`，engine_workers.py 在 :145 调用它登记 mesh 信息）。
 **真实场景**：`compute_log_prob`(mesh=actor)、`compute_ref_log_prob`(mesh=ref)、`train_batch`/`infer_batch`/`train_mini_batch`(mesh=train)——所有重计算都用这个 mesh-aware 模式。
 
 ### (6) DIRECT_ROLLOUT_METHOD：禁用占位

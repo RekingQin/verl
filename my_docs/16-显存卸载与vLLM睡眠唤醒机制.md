@@ -41,7 +41,7 @@ vLLM 是推理引擎，**verl 不销毁/重建引擎**，而是用 vLLM 的 slee
 resume memory occupation）机制，由 `free_cache_engine=True`（默认）启用，并**分标签（tags）**
 管理 `"weights"` 与 `"kv_cache"` 两块显存。
 
-同步 colocate 场景生命周期（`engine_workers.py::update_weights`，mode="naive"）：
+同步 colocate 场景生命周期（`engine_workers.py::ActorRolloutRefWorker.update_weights`，:720，mode="naive"）：
 
 ```
 [训练刚结束，准备 rollout]
@@ -122,7 +122,7 @@ hybrid engine colocate（`replica.py::init_hybrid_colocated`）下，actor(Megat
 同一批 GPU。若显存常驻叠加：`actor(参数+梯度+fp32优化器) + vLLM(权重+KV cache)` 远超单卡容量，
 故必须错峰共用。
 
-### 6.2 RL 单步显存时间线（`engine_workers.py::update_weights`）
+### 6.2 RL 单步显存时间线（`engine_workers.py::ActorRolloutRefWorker.update_weights`，:720；V1 中由 `PPOTrainerSync.on_step_end` / `on_sample_end` 触发 sleep/update_weights）
 
 ```
 ========== 训练阶段 ==========

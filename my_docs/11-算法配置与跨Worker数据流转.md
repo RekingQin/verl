@@ -95,7 +95,7 @@ Driver/engine 通过 `get_adv_estimator_fn(name)` / `get_policy_loss_fn(loss_mod
 ### 站 3：old_log_prob（Actor 前向）
 | 项 | 内容 |
 |----|------|
-| Driver 调用 | `actor_rollout_wg.compute_log_prob(batch)`（engine_workers.py:644） |
+| Driver 调用 | `actor_rollout_wg.compute_log_prob(batch)`（engine_workers.py:697） |
 | 落点 | **Actor 训练引擎**，`self.actor.infer_batch(data)`（前向 no_grad） |
 | 输入 | `input_ids, responses, response_mask`（full sequence） |
 | 计算 | 用**当前 π_θ**（更新前）重算每个生成 token 的 logprob |
@@ -106,7 +106,7 @@ Driver/engine 通过 `get_adv_estimator_fn(name)` / `get_policy_loss_fn(loss_mod
 ### 站 4：ref_log_prob（Ref 前向，可选）
 | 项 | 内容 |
 |----|------|
-| Driver 调用 | `ref_policy_wg.compute_ref_log_prob(batch)`（engine_workers.py:637） |
+| Driver 调用 | `ref_policy_wg.compute_ref_log_prob(batch)`（engine_workers.py:690） |
 | 落点 | **Ref 引擎**（冻结的初始模型；LoRA 时即 actor 关 adapter） |
 | 输入 | 同上 full sequence |
 | 计算 | 用 π_ref 算 logprob |
@@ -116,7 +116,7 @@ Driver/engine 通过 `get_adv_estimator_fn(name)` / `get_policy_loss_fn(loss_mod
 ### 站 5：values（Critic 前向，仅 GAE）
 | 项 | 内容 |
 |----|------|
-| Driver 调用 | `critic_wg.infer_batch(batch)`（TrainingWorker.infer_batch，engine_workers.py:380） |
+| Driver 调用 | `critic_wg.infer_batch(batch)`（TrainingWorker.infer_batch，engine_workers.py:392） |
 | 落点 | **Critic 引擎** |
 | 输入 | full sequence |
 | 计算 | 逐 token 价值估计 |
@@ -126,7 +126,7 @@ Driver/engine 通过 `get_adv_estimator_fn(name)` / `get_policy_loss_fn(loss_mod
 ### 站 6：Advantage（Driver 上算，无大模型）
 | 项 | 内容 |
 |----|------|
-| 落点 | **Driver**（`ray_trainer.py` / `main_ppo_sync.py` 编排，纯 tensor 运算） |
+| 落点 | **Driver**（v0 在 `ray_trainer.py`；V1 在 `trainer/ppo/v1/trainer_base.py::_compute_advantage`，纯 tensor 运算） |
 | 输入 | `token_level_scores`, `old_log_probs`, `ref_log_prob`(A), `values`(GAE), `uid`(index) |
 | 计算 | ① `apply_kl_penalty`(可选,A位置)：`token_level_rewards = token_level_scores - kl_coef*KL`；② `get_adv_estimator_fn(name)`：GAE 用 TD(λ)+values；GRPO 用组内 (r-μ)/σ |
 | 输出 | `token_level_rewards`, `advantages`, `returns`(GAE) |
@@ -143,14 +143,14 @@ Driver/engine 通过 `get_adv_estimator_fn(name)` / `get_policy_loss_fn(loss_mod
 ### 站 8：update_actor（Actor 训练，核心）
 | 项 | 内容 |
 |----|------|
-| Driver 调用 | `actor_rollout_wg.update_actor(batch)`（engine_workers.py:652 → `actor.train_mini_batch`） |
+| Driver 调用 | `actor_rollout_wg.update_actor(batch)`（engine_workers.py:705 → `actor.train_mini_batch`） |
 | 落点 | Actor 引擎，loss=`ppo_loss`（losses.py:57，`init_model` 时 `set_loss_fn` 注入） |
 | 输入 | `old_log_probs`, `advantages`, `response_mask`，可选 `ref_log_prob`/`rollout_is_weights` |
 | 计算 | 见下 §11.3，前向（算 `log_prob`/`entropy`）+ 组装 loss + 反向 |
 | 输出 | 更新 actor 参数 + metrics（pg_loss/kl/entropy/grad_norm...） |
 
 ### 站 9：update_weights（权重回灌 Rollout）
-`actor_rollout_wg.update_weights()`（engine_workers.py:666）：把刚更新的 actor 权重同步给 colocate 的 rollout 引擎（`naive` 模式同进程直传 / 否则走 checkpoint_engine）。下一个 step 的生成才用上新策略——这保证 on-policy。
+`actor_rollout_wg.update_weights()`（engine_workers.py:720，async）：把刚更新的 actor 权重同步给 colocate 的 rollout 引擎（`naive` 模式同进程直传 / 否则走 checkpoint_engine）。下一个 step 的生成才用上新策略——这保证 on-policy。（V1 中由 `PPOTrainerSync.on_step_end` 的 `checkpoint_manager.update_weights()` 触发。）
 
 ---
 
@@ -190,7 +190,7 @@ vanilla PPO 的 `pg_loss`：`ratio = exp(log_prob - old_log_prob)`，`-min(ratio
 
 ## 11.4 这些字段如何"跨 worker"传（两种数据面）
 
-| | 经典版 `main_ppo.py` | 同步版 `main_ppo_sync.py` |
+| | v0 经典版 `main_ppo_v0.py` | V1 主链路 `main_ppo.py`（ppo/v1/） |
 |---|---|---|
 | 载体 | `DataProto`（batch 张量 + meta_info） | TransferQueue 里 nested `TensorDict` + `KVBatchMeta`(元数据) |
 | 切分 | dispatch 时 `chunk(world_size)`，collect 时 `concat` | dispatch 切的是 key 句柄，张量留在 TQ |

@@ -2,7 +2,8 @@
 
 > 返回索引：[README.md](README.md)
 > 关联阅读：[01-核心运行流程.md](01-核心运行流程.md)（dispatch 概览）、[11-算法配置与跨Worker数据流转.md](11-算法配置与跨Worker数据流转.md)
-> 源码基线：`single_controller/{base,ray}/`、`trainer/main_ppo.py`、`workers/engine_workers.py`
+> 源码基线：`single_controller/{base,ray}/`、`trainer/main_ppo.py`（V1，`TaskRunnerV1`）/ `trainer/main_ppo_v0.py`（legacy，`TaskRunner`）、`workers/engine_workers.py`
+> 版本提示：`main_ppo.py` 现为 V1 入口（`TaskRunnerV1`，`run_ppo @ :34`、`TaskRunnerV1 @ :104`）；v0 的 `TaskRunner`/`RayPPOTrainer` 已迁至 `main_ppo_v0.py`。V1 的"建组"逻辑（原 `ray_trainer.init_workers`）在 `trainer/ppo/v1/trainer_base.py::PPOTrainer.init`（:217），下文 §10.8 以 v0 链路为主便于对照。
 
 ---
 
@@ -31,14 +32,13 @@ Ray 在 verl 里干 4 件事：
  │  [1] Driver 进程: python main_ppo.py                                 │
  │        run_ppo(config):                                              │
  │          ray.init(...)                  <- 拉起/连接集群              │
- │          runner = TaskRunner.remote()   <- [2]                       │
+ │          runner = TaskRunnerV1.remote() <- [2]（v0 为 TaskRunner）     │
  │          ray.get(runner.run.remote(config))                          │
  │                                                                      │
- │  [2] TaskRunner (@ray.remote, num_cpus=1)  "控制器 actor"            │
+ │  [2] TaskRunnerV1 (@ray.remote, num_cpus=1)  "控制器 actor"          │
  │        - 解析 Hydra config                                           │
  │        - 建 role_worker_mapping / ResourcePoolManager                │
- │        - RayPPOTrainer.init_workers()  -> 创建 [3]                    │
- │        - trainer.fit()  单控制器编排训练循环                          │
+ │        - PPOTrainer.init() / fit()  （V1：trainer/ppo/v1/）           │
  │                                                                      │
  │  [3] Worker actors (每张 GPU 一个 Ray actor)  "重计算"               │
  │        ActorRolloutRefWorker / TrainingWorker(critic) ...            │
@@ -47,11 +47,11 @@ Ray 在 verl 里干 4 件事：
  └─────────────────────────────────────────────────────────────────────┘
 ```
 
-为什么 Driver 逻辑要再包一层 `TaskRunner` actor（`main_ppo.py:83`）？注释明说：`please make sure main_task is not scheduled on head`——把重编排逻辑放进一个 `num_cpus=1` 的 actor，避免占用 Ray head 节点资源，也让 Driver 本身可被调度/隔离。
+为什么 Driver 逻辑要再包一层 `TaskRunnerV1` actor（`main_ppo.py:104`；v0 见 `main_ppo_v0.py:30`）？注释明说：`please make sure main_task is not scheduled on head`——把重编排逻辑放进一个 `num_cpus=1` 的 actor，避免占用 Ray head 节点资源，也让 Driver 本身可被调度/隔离。
 
 ---
 
-## 10.2 第①步：起集群（`run_ppo`，main_ppo.py:52）
+## 10.2 第①步：起集群（`run_ppo`，main_ppo.py:34）
 
 ```python
 if not ray.is_initialized():
@@ -69,14 +69,14 @@ ray.get(runner.run.remote(config))      # 阻塞直到训练结束
 
 ---
 
-## 10.3 第②步：资源池 → PlacementGroup（`ResourcePoolManager`，ray/base.py:184）
+## 10.3 第②步：资源池 → PlacementGroup（`ResourcePoolManager`，ray/base.py:185）
 
 Ray 用 **PlacementGroup（PG）** 预占 GPU。一个 PG 由若干 **bundle** 组成，每个 bundle = 一份资源（如 `{"CPU": k, "GPU": 1}`）。
 
 ```
 config.trainer.nnodes=2, n_gpus_per_node=8
         │
-        v  init_resource_pool_mgr (main_ppo.py:158)
+        v  init_resource_pool_mgr（v0: main_ppo_v0.py:67；V1: trainer_base.py::PPOTrainer._init_resource_pool_mgr）
 resource_pool_spec = {"global_pool": [8, 8]}   # 每个元素=一个节点的进程数
         │
         v  ResourcePoolManager.create_resource_pool
@@ -147,7 +147,7 @@ return self.cls.options(**options).remote(*args, **kwargs)       # 真正 .remot
 ### 声明期：`@register`（decorator.py:398）
 Worker 方法被装饰，把 dispatch/execute/blocking 三属性写进方法的 `MAGIC_ATTR`：
 ```python
-# engine_workers.py:641
+# engine_workers.py:697
 @register(dispatch_mode=make_nd_compute_dataproto_dispatch_fn(mesh_name="actor"))
 def compute_log_prob(self, data): ...
 ```
@@ -197,7 +197,7 @@ return [self._execute_remote_single_worker(worker, method_name, *args, **kwargs)
 ### dispatch 模式如何选 rank（mesh-aware）
 `make_nd_compute_dataproto_dispatch_fn("actor")`（decorator.py:300）是"惰性 N 维 dispatch"：它先向 WorkerGroup 查询每个 global rank 对应的 **DP rank**（`_query_dispatch_info`），只把数据切成 DP_size 份，再按 `dp_rank_mapping` 把同一份广播给同一 DP 组内的所有 TP/PP rank（`dispatch_nd_compute`，:202）。collect 时只从 `is_collect=True` 的 rank（每个 DP 组的 MP 源 rank）收集（`collect_nd_compute`，:236），避免 TP/PP 冗余重复。
 
-这套信息从哪来？Worker 初始化时 `_register_dispatch_collect_info(mesh_name="train", dp_rank=..., is_collect=...)`（engine_workers.py:137）把自己的 DP 拓扑登记进去；Driver 第一次调用该 mesh 的方法时惰性拉取并缓存（`dispatch_lazy_compute_data_proto`，:266）。
+这套信息从哪来？Worker 初始化时 `_register_dispatch_collect_info(mesh_name="train", dp_rank=..., is_collect=...)`（定义于 `single_controller/base/worker.py:86`，engine_workers.py:145 调用）把自己的 DP 拓扑登记进去；Driver 第一次调用该 mesh 的方法时惰性拉取并缓存（`dispatch_lazy_compute_data_proto`，decorator.py:266）。
 
 ---
 
@@ -233,13 +233,13 @@ return [self._execute_remote_single_worker(worker, method_name, *args, **kwargs)
 
 ---
 
-## 10.8 各 model 如何建 WorkerGroup、分资源、协调计算（`init_workers`，ray_trainer.py:775）
+## 10.8 各 model 如何建 WorkerGroup、分资源、协调计算（v0：`init_workers`，ray_trainer.py:772；V1：`PPOTrainer.init`，trainer_base.py:217）
 
-前面 §10.3/10.4 讲的是"通用机制"。这一节落到 verl 真实的 rollout/actor/critic/ref/reward 五类模型上，回答三个问题：**怎么建组、资源怎么分、计算怎么协调**。
+前面 §10.3/10.4 讲的是"通用机制"。这一节落到 verl 真实的 rollout/actor/critic/ref/reward 五类模型上，回答三个问题：**怎么建组、资源怎么分、计算怎么协调**。（下文以 v0 链路为主便于对照，V1 对应逻辑在 `trainer/ppo/v1/trainer_base.py`。）
 
 ### (1) 三个映射表是建组的"输入"
 
-`TaskRunner.run`（main_ppo.py:223）先准备好两张表，`init_workers` 据此建组：
+`TaskRunner.run`（v0：main_ppo_v0.py:30 起）先准备好两张表，`init_workers` 据此建组：
 
 | 表 | 含义 | 来源 |
 |----|------|------|
@@ -247,7 +247,7 @@ return [self._execute_remote_single_worker(worker, method_name, *args, **kwargs)
 | `mapping: {Role -> pool_name}` | 每个角色放哪个资源池 | 默认全 `global_pool`，reward/teacher 可独立池 |
 | `resource_pool_spec: {pool_name -> [每节点GPU数...]}` | 每个池占多少卡 | `init_resource_pool_mgr` |
 
-关键事实：**actor、rollout、ref 三者不是三个独立 Worker，而是融合在一个 `ActorRolloutRefWorker` 里**（`add_actor_rollout_worker`，main_ppo.py:126）。角色枚举取 `Role.ActorRolloutRef`（需独立 ref 时）或 `Role.ActorRollout`（ref 融进 actor，即 LoRA 的 `ref_in_actor`）。这就是 verl 的 **hybrid engine**：一个 actor 进程内同时持有训练引擎（FSDP/Megatron）和推理引擎（vLLM），靠 sleep/wake 切换显存。
+关键事实：**actor、rollout、ref 三者不是三个独立 Worker，而是融合在一个 `ActorRolloutRefWorker` 里**（`add_actor_rollout_worker`，main_ppo_v0.py:35）。角色枚举取 `Role.ActorRolloutRef`（需独立 ref 时）或 `Role.ActorRollout`（ref 融进 actor，即 LoRA 的 `ref_in_actor`）。这就是 verl 的 **hybrid engine**：一个 actor 进程内同时持有训练引擎（FSDP/Megatron）和推理引擎（vLLM），靠 sleep/wake 切换显存。
 
 ### (2) 建组流程：按"资源池"聚合，colocate 进同一 actor 再 spawn 分裂
 
@@ -343,7 +343,7 @@ CheckpointEngineManager(trainer=actor_rollout_wg, replicas=...)
 | 显存容量 | ⚠️ 分时复用 | sleep/wake + offload 错峰，避免两份同时吃满 |
 | 同步方式 | 每步 `update_weights` | `actor.engine.get_per_tensor_param()` → `rollout.update_weights(...)` 拷贝 |
 
-关键证据：`update_weights`（engine_workers.py:666~743）若是同一份内存就无需"同步"。其调度为——训练时 `rollout.sleep()` 释放显存；同步时 `rollout.resume(["weights"])` → 拷贝权重 → `actor.engine.to("cpu")` offload → `rollout.resume(["kv_cache"])`；生成时 rollout 占显存、actor 在 CPU。**结论：共享同卡同进程与显存容量（分时），但权重是两份独立拷贝，每步显式拷贝同步以保证 on-policy。**
+关键证据：`update_weights`（engine_workers.py:720 起的 async 方法体）若是同一份内存就无需"同步"。其调度为——训练时 `rollout.sleep()` 释放显存；同步时 `rollout.resume(["weights"])` → 拷贝权重 → `actor.engine.to("cpu")` offload → `rollout.resume(["kv_cache"])`；生成时 rollout 占显存、actor 在 CPU。**结论：共享同卡同进程与显存容量（分时），但权重是两份独立拷贝，每步显式拷贝同步以保证 on-policy。**
 
 ### (7) 都用 global_pool 的各 role：卡数、通信组、并行策略如何各自管理
 
@@ -355,7 +355,7 @@ CheckpointEngineManager(trainer=actor_rollout_wg, replicas=...)
 | **WORLD 进程组** | `initialize_global_process_group_ray`（distributed.py:80）带 `is_initialized()` 守卫，**每进程只建一次**；同进程 colocate 的 role **共用这一个全卡 NCCL WORLD 组** |
 | **各 role 子通信组** | 每个 engine 在 `_init_device_mesh`（fsdp/transformer_impl.py:211）按**自己的 config** `init_device_mesh` 在 WORLD 之上切出独立子 mesh（`new_group` 各建 NCCL communicator）；分时执行，互不干扰 |
 | **并行策略** | 来自各 role 独立 config：`actor/critic.strategy`(fsdp/megatron)、`fsdp_size`、`ulysses_sequence_parallel_size`、megatron `tp/pp_size`；rollout 另建 `(dp,infer_tp,infer_pp)` mesh + `stateless_init_process_group` |
-| **与 dispatch 衔接** | 各 engine 算出 `get_data_parallel_rank()`/`is_mp_src_rank_with_outputs()`，经 `_register_dispatch_collect_info(mesh_name=...)`（engine_workers.py:137）注册到 `actor`/`ref`/`train` mesh，供 §10.5 的 `make_nd_compute_dataproto_dispatch_fn` 按该 role 拓扑切分/收集 |
+| **与 dispatch 衔接** | 各 engine 算出 `get_data_parallel_rank()`/`is_mp_src_rank_with_outputs()`，经 `_register_dispatch_collect_info(mesh_name=...)`（定义于 worker.py:86，engine_workers.py:145 调用）注册到 `actor`/`ref`/`train` mesh，供 §10.5 的 `make_nd_compute_dataproto_dispatch_fn` 按该 role 拓扑切分/收集 |
 
 要点：**同样 8 卡，各 role 按自己策略切出不同逻辑拓扑，但都占用全部 8 卡**。一句话：共享全卡 WORLD 组，子通信组与并行策略按 role 在 WORLD 之上独立建、分时跑、互不干扰。
 

@@ -6,14 +6,16 @@
 
 ## 9.1 架构演进
 
-- [ ] **完成 `main_ppo.py` → `main_ppo_sync.py` 迁移**（v0.8.0 将移除旧版）。
-  - *方案*：先把 `ray_trainer.py` 中被双链路共享的算子（`apply_kl_penalty`/`compute_advantage`/`_balance_batch`）抽到独立模块，两边 import 同一份；再给旧链路加 deprecation warning；最后用 CI 跑通 sync 链路的等价测试（同 seed 下 metrics 对齐）后删除旧 `RayPPOTrainer`。风险点：recipe/ 下仍继承旧 trainer，需同步迁移。
+- [x] **完成 `main_ppo_sync.py` → V1 trainer 迁移**（已在当前分支落地）。
+  - *落地方式*：旧 `main_ppo.py` 更名为 `main_ppo_v0.py`（deprecated，v0.9.0 移除）；新 `main_ppo.py` 默认 `trainer.use_v1=true`，走 `trainer/ppo/v1/` 下的 `PPOTrainer` 基类 + `@register_trainer` 注册的三种模式（`sync` / `colocate_async` / `separate_async`）；`ReplayBuffer`/`AgentLoopManagerTQ` 移入 `ppo/v1/`，`compute_advantage_for_multi_trajectories` 移入 `ppo/v1/utils.py`。`ray_trainer.py` 中共享算子（`apply_kl_penalty`/`compute_advantage`/`_balance_batch`）被 V1 复用。
+  - *剩余*：`experimental/` 下的 `fully_async_policy` / `one_step_off_policy` 仍为独立实验入口，可评估是否并入 V1 的 `separate_async`（后者已覆盖"分离 + partial rollout"场景）。
 
-- [ ] **全异步 / one-step-off-policy 主线化**（`experimental/fully_async_policy`、`one_step_off_policy` 合入主库）。
-  - *方案*：复用现有 `ReplayBuffer` 的 `batch_size` 采样模式（已支持，main_ppo_sync.py:261）替代 `global_steps` 同步屏障，让 train 不必等齐整个 step 的 rollout；用版本号 tag（weight version）标记每条样本来自哪一代权重，训练侧按 IS 权重（已有 `rollout_is_weights`）做 off-policy 修正，容忍 1 步滞后。关键是把 `step()` 拆成"生产者(rollout)"与"消费者(train)"两个独立 asyncio 循环，经 TransferQueue 解耦（参考 AReaL/rllm-pipeline）。
+- [x] **全异步 / one-step-off-policy 主线化**（已以 V1 模式合入主库）。
+  - *落地方式*：`PPOTrainerColocateAsync`（`trainer_mode=colocate_async`，colocate + partial rollout，kimi-1.5 风格）与 `PPOTrainerSeparateAsync`（`trainer_mode=separate_async`，分离 + partial rollout，AReaL 风格）已内置；`ReplayBuffer` 支持 `batch_size` 采样 + `max_off_policy_threshold` 跨版本样本容忍；参数同步走 `CheckpointEngineManager`（`separate_async` 要求非 naive 后端）。
+  - *剩余*：staleness 控制/流式背压策略在 V1 中的精细调参仍有优化空间。
 
 - [ ] **Agentic RL 一等公民**：多轮/工具调用、partial rollout、router replay 纳入核心调度。
-  - *方案*：`agent_loop` 已支持多 session/多输出（key=`{uid}_{sid}_{idx}`）；进一步把"工具调用结果"作为 observation token 标进 `response_mask=0`（GAE/loss 已会跳过），并在 `CheckpointEngineWithCache` 基础上让长程 agent 任务在权重更新时走"本地缓存续跑"（Laminar），避免长轨迹被打断。
+  - *现状*：`agent_loop` 已支持多 session/多输出（key=`{uid}_{sid}_{idx}`）；`colocate_async`/`separate_async` 已支持 partial rollout（`abort_replicas` + `resume_generation_replicas`）。进一步方向：把"工具调用结果"作为 observation token 标进 `response_mask=0`（GAE/loss 已会跳过），并在 `CheckpointEngineWithCache` 基础上让长程 agent 任务在权重更新时走"本地缓存续跑"（Laminar），避免长轨迹被打断。
 
 ## 9.2 性能 / 并行
 
@@ -27,7 +29,7 @@
   - *方案*：在 `CheckpointEngineManager` 增加"按 backend 自动选型"逻辑（colocate→naive，分离+固定→nccl，弹性/异构→nixl）；对 DeepSeek-671B 级 MoE，按专家分片流式传输（专家维 all-gather + ring p2p），并用 `update_weights_bucket_megabytes` 调优 bucket 大小做计算/通信重叠。
 
 - [ ] **batch-invariant 数值一致性**：集成 batch-invariant kernel，从根本消除 rollout-train mismatch。
-  - *方案*：当前靠 `calculate_debug_metrics` 事后观测（07 文档）。引入 vexact 的 batch-invariant attention/RMSNorm/matmul kernel（rms_norm_implementation="triton" 已有钩子），保证 rollout（vLLM/SGLang）与 train 前向逐位一致 → 可关掉 decoupled 重算、省一次 forward。先在小模型上验证 `rollout_probs_diff_max < 1e-3`。
+  - *现状*：`full_determinism` 配置已可置 `VLLM_BATCH_INVARIANT=1`（main_ppo.py 启动时注入），配合 `calculate_debug_metrics` 事后观测（07 文档）。进一步引入 vexact 的 batch-invariant attention/RMSNorm/matmul kernel（`rms_norm_implementation="triton"` 已有钩子），保证 rollout（vLLM/SGLang）与 train 前向逐位一致 → 可关掉 decoupled 重算、省一次 forward。先在小模型上验证 `rollout_probs_diff_max < 1e-3`。
 
 ## 9.3 容错 / 弹性
 
@@ -35,7 +37,7 @@
   - *方案*：把"崩溃→整体退出→外层重拉"升级为"崩溃→剔除死节点→动态调整 world_size→从最近 ckpt 恢复"。依赖三件事：① 权重同步用 nixl/mooncake（弹性高，可动态增删 replica，已有 `add_replicas`/`remove_replicas`）；② FSDP/Megatron 支持变 world_size 重切分 ckpt（resharding）；③ `ResourcePoolManager` 支持运行时重建 PlacementGroup。
 
 - [ ] **异步 ckpt 全后端化**：FSDP 侧补齐 Megatron 已有的 `async_save`。
-  - *方案*：Megatron 已用 `AsyncCallsQueue` FIFO + 延后写 tracker（04 文档）。FSDP 侧可在 `FSDPCheckpointManager` 用后台线程把 sharded state_dict 先拷到 pinned CPU memory（不阻塞训练），再异步落盘；统一两者的 tracker 原子更新语义（先写临时文件再 rename，保证 `latest_checkpointed_iteration.txt` 永远指向完整 ckpt）。
+  - *现状*：Megatron 已用 `AsyncCallsQueue` FIFO + 延后写 tracker（04 文档）；TransferQueue ≥0.1.9 已支持 `save_checkpoint`/`load_checkpoint` 快照，配合 V1 trainer 断点续训。FSDP 侧可在 `FSDPCheckpointManager` 用后台线程把 sharded state_dict 先拷到 pinned CPU memory（不阻塞训练），再异步落盘；统一两者的 tracker 原子更新语义（先写临时文件再 rename，保证 `latest_checkpointed_iteration.txt` 永远指向完整 ckpt）。
 
 - [ ] **细粒度抢占恢复**：在 ESI 检测基础上做"步内"安全点。
   - *方案*：当前 `should_save_ckpt_esi`（04 文档）只在 step 边界判断。对长 step（大 batch/长序列），可在 micro-batch 累积梯度的间隙插入轻量安全点：保存"已完成 micro-batch 数 + 优化器状态"，抢占恢复时从该 micro-batch 续算，避免重跑整个 step。
@@ -52,6 +54,8 @@
   - *方案*：写一个脚本扫描各 `@register_*` 注册表，自动生成"可选 adv_estimator / policy_loss / engine backend"清单与默认 yaml 片段，挂到文档；新算法接入时只需对照清单填 yaml。
 
 ## 9.5 算法
+
+- [x] **DAPO 组过滤 / 偏好反馈 PPO 已合入主配置**（`algorithm.filter_groups`、`algorithm.use_pf_ppo`，见 [03-优化算法.md](03-优化算法.md) 3.4）；后续可继续沉淀基准。
 
 - [ ] **熵机制系列**（clip_cov/kl_cov）与 GSPO/CISPO 的统一基准与文档化。
   - *方案*：用同一 base config（同模型/数据/seed）跑各 policy_loss 变体，统一记录 entropy/kl/clipfrac/reward 曲线，沉淀为对比基准表，便于选型（这些都已在 `POLICY_LOSS_REGISTRY`，切换仅改 `loss_mode`）。

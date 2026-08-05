@@ -25,11 +25,11 @@ verl 把 Ray 当成 **"分布式进程操作系统"** 来用，覆盖六大职�
 
 | 技法 | 出处 | 用途 |
 |------|------|------|
-| `ray.is_initialized()` 守卫后再 `ray.init()` | `trainer/main_ppo.py:62` | 复用已有集群/避免重复初始化；脚本既能本地起集群也能 attach 到已有集群 |
-| `ray.init(runtime_env={...})` 统一下发环境变量 | `main_ppo.py:80`，`get_ppo_ray_runtime_env`（`constants_ppo.py`） | 把 `TOKENIZERS_PARALLELISM / NCCL_DEBUG / VLLM_LOGGING_LEVEL / VLLM_ALLOW_RUNTIME_LORA_UPDATING / TRANSFER_QUEUE_ENABLE` 一次性注入**所有** actor，保证全集群环境一致 |
-| `.options(runtime_env={"nsight": nsight_options})` | `main_ppo.py:99` | 给 TaskRunner actor 单独挂 nsys profiler，做性能剖析 |
-| `ray.timeline(filename=...)` | `main_ppo.py:108` | 导出 Ray 任务时间线 trace，事后分析调度 |
-| `ray.remote(num_cpus=1)(TaskRunner)` 动态包装 | `main_ppo.py:83` | 把控制器逻辑放进 `num_cpus=1` 的 actor，**避免重编排逻辑被调度到 head 节点** |
+| `ray.is_initialized()` 守卫后再 `ray.init()` | `trainer/main_ppo.py:57` | 复用已有集群/避免重复初始化；脚本既能本地起集群也能 attach 到已有集群 |
+| `ray.init(runtime_env={...})` 统一下发环境变量 | `main_ppo.py:75`，`get_ppo_ray_runtime_env`（`constants_ppo.py`） | 把 `TOKENIZERS_PARALLELISM / NCCL_DEBUG / VLLM_LOGGING_LEVEL / VLLM_ALLOW_RUNTIME_LORA_UPDATING / TRANSFER_QUEUE_ENABLE` 一次性注入**所有** actor，保证全集群环境一致 |
+| `.options(runtime_env={"nsight": nsight_options})` | `main_ppo.py:91` | 给 TaskRunnerV1 actor 单独挂 nsys profiler，做性能剖析 |
+| `ray.timeline(filename=...)` | `main_ppo.py:100` | 导出 Ray 任务时间线 trace，事后分析调度 |
+| `ray.remote(num_cpus=1)(TaskRunnerV1)` 动态包装 | `main_ppo.py:91/93`（v0 见 `main_ppo_v0.py:30`） | 把控制器逻辑放进 `num_cpus=1` 的 actor，**避免重编排逻辑被调度到 head 节点** |
 
 要点：**`runtime_env` 是 verl 统一环境变量的唯一入口**——不要在 Worker 里散落 `os.environ`，要全局生效就走这里。
 
@@ -42,10 +42,10 @@ verl 同时用两种方式，区别在于"是否提前知道要 remote"：
 | 写法 | 代表出处 | 适用场景 |
 |------|----------|----------|
 | **装饰器** `@ray.remote` | `NCCLIDStore`（`rendezvous/ray_backend.py:34`）、`TrajectoryTracker`（`trajectory_tracker.py:50`）、`MessageQueue`（`message_queue.py:26`） | 类天生就是 actor，定义即声明 |
-| **动态包装** `ray.remote(cls)` | `ActorRolloutRefWorker`/`TrainingWorker`（`main_ppo.py:144/155`）、`CheckpointEngineWorker`（`checkpoint_engine/base.py:342`、`replica.py:232`）、`vLLMHttpServer`（`vllm_async_server.py:982`） | 同一个普通类既要能本地实例化（测试/复用），又要能按需变成 actor；解耦"业务逻辑"与"分布式封装" |
+| **动态包装** `ray.remote(cls)` | `ActorRolloutRefWorker`/`TrainingWorker`（`main_ppo_v0.py:53/64`；V1 见 `trainer/ppo/v1/trainer_base.py`）、`CheckpointEngineWorker`（`checkpoint_engine/base.py`、`replica.py`）、`vLLMHttpServer`（`vllm_async_server.py`） | 同一个普通类既要能本地实例化（测试/复用），又要能按需变成 actor；解耦"业务逻辑"与"分布式封装" |
 | **包装普通函数为 task** `ray.remote(copy)` | `trajectory_tracker.py:30`（`remote_copy`），`save_to_hdfs`（`:34` 装饰器） | 无状态计算（如 HDFS 上传）fan-out 成并行 task |
 
-关键设计：**Worker 业务类本身不带 `@ray.remote`**，由 `main_ppo.py` 在建 `role_worker_mapping` 时才 `ray.remote(cls)`，这样 `single_controller` 的机制能透明地处理 actor/非 actor 两种形态。
+关键设计：**Worker 业务类本身不带 `@ray.remote`**，由 `main_ppo.py`（V1 在 `trainer_base.py`）在建 `role_worker_mapping` 时才 `ray.remote(cls)`，这样 `single_controller` 的机制能透明地处理 actor/非 actor 两种形态。
 
 ---
 
@@ -249,29 +249,29 @@ Ray 只帮各 Worker 凑齐 `RANK/MASTER_ADDR/PORT`（注入 env），建组与�
 
 | Ray API / 技法 | 主要出处 | 一句话用途 |
 |----------------|----------|-----------|
-| `ray.init(runtime_env=)` | main_ppo.py:80 | 起集群+统一环境变量 |
-| `ray.is_initialized()` | main_ppo.py:62 | 复用/避免重复初始化 |
-| `ray.remote(cls)` 动态包装 | main_ppo.py:144、replica.py:232 | 普通类按需变 actor |
+| `ray.init(runtime_env=)` | main_ppo.py:75 | 起集群+统一环境变量 |
+| `ray.is_initialized()` | main_ppo.py:57 | 复用/避免重复初始化 |
+| `ray.remote(cls)` 动态包装 | main_ppo_v0.py:53、replica.py | 普通类按需变 actor |
 | `@ray.remote(num_cpus=,max_concurrency=)` | message_queue.py:26 | 声明高并发 async actor |
 | `ray.remote(func)` | trajectory_tracker.py:30 | 普通函数变并行 task |
-| `.options(name=,scheduling_strategy=,runtime_env=,max_concurrency=,lifetime=,get_if_exists=)` | vllm_async_server.py:1027 | 创建 actor 时定制调度/命名/并发/生命周期 |
-| `placement_group(strategy="STRICT_PACK")` | base.py:156 | 同机预占 GPU bundle |
-| `PlacementGroupSchedulingStrategy(bundle_index=)` | base.py:398 | 钉 actor 到指定卡 |
-| `NodeAffinitySchedulingStrategy(node_id,soft=False)` | vllm_async_server.py:1028 | 钉 server 到 worker 同节点 |
+| `.options(name=,scheduling_strategy=,runtime_env=,max_concurrency=,lifetime=,get_if_exists=)` | vllm_async_server.py | 创建 actor 时定制调度/命名/并发/生命周期 |
+| `placement_group(strategy="STRICT_PACK")` | ray/base.py | 同机预占 GPU bundle |
+| `PlacementGroupSchedulingStrategy(bundle_index=)` | ray/base.py | 钉 actor 到指定卡 |
+| `NodeAffinitySchedulingStrategy(node_id,soft=False)` | vllm_async_server.py | 钉 server 到 worker 同节点 |
 | `list_named_actors(all_namespaces=True)` | ray_backend.py:44 | 跨 namespace 枚举命名 actor |
-| `ray.get_actor(name=)` | ray_backend.py:48、base.py:516 | 按名取 actor 句柄 |
+| `ray.get_actor(name=)` | ray_backend.py:48、ray/base.py | 按名取 actor 句柄 |
 | `get_if_exists=True, lifetime="detached"` | trajectory_tracker.py:83 | 全局单例、跨 driver 存活 |
 | `ray.put` + ThreadPool | ray_utils.py:51 | 并行入 object store |
-| `ray.get(list_a+list_b)` | checkpoint_engine/base.py:392 | 合并 future 做统一 barrier |
+| `ray.get(list_a+list_b)` | checkpoint_engine/base.py | 合并 future 做统一 barrier |
 | `ray.wait(num_returns=1)` | fully_async_main.py:188 | 等任一任务完成 |
 | `ray.cancel(ref)` | fully_async_main.py:197 | 取消未完成任务 |
-| `await actor.m.remote()` + `asyncio.gather` | replica.py:267 | async actor 并发 fan-out |
+| `await actor.m.remote()` + `asyncio.gather` | replica.py | async actor 并发 fan-out |
 | `ref.future()` + `asyncio.wrap_future` | message_queue.py:189 | Ray ObjectRef→asyncio 桥接 |
 | `ray.get_runtime_context().get_accelerator_ids()` | worker.py:279 | 拿本进程 GPU 物理 id |
-| `.get_node_id()/.get_job_id()` | vllm_async_server.py:124/997 | 节点亲和 / job 级 socket 隔离 |
-| `worker.__ray_call__.remote(lambda)` | vllm_async_server.py:995 | 远程执行任意闭包读运行时状态 |
-| `ray.util.get_node_ip_address()` | vllm_async_server.py:146 | 取本机 IP 作监听地址 |
-| `ray.timeline(filename=)` | main_ppo.py:108 | 导出调度时间线 |
+| `.get_node_id()/.get_job_id()` | vllm_async_server.py | 节点亲和 / job 级 socket 隔离 |
+| `worker.__ray_call__.remote(lambda)` | vllm_async_server.py | 远程执行任意闭包读运行时状态 |
+| `ray.util.get_node_ip_address()` | vllm_async_server.py | 取本机 IP 作监听地址 |
+| `ray.timeline(filename=)` | main_ppo.py:100 | 导出调度时间线 |
 
 ---
 

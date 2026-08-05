@@ -1,8 +1,9 @@
 # verl 框架源码深度解读（主题索引）
 
 > 目标读者：后续需全面负责 verl 框架底层、调度、并行与架构优化的开发者。
-> 解读基线：当前仓库 `feat/verl-learning` 分支（同步 PPO 主链路 `verl/trainer/main_ppo_sync.py`）。
+> 解读基线：当前仓库 `feat/verl-learning` 分支（V1 PPO 主链路 `verl/trainer/main_ppo.py` + `verl/trainer/ppo/v1/`）。
 > 说明：本系列按主题拆分为独立文档，每个主题可独立维护迭代。架构/流程图均使用 ASCII 字符绘制。
+> 版本提示：代码已重构为 V1 trainer 体系（`main_ppo.py` + `trainer/ppo/v1/`），旧版 `main_ppo.py` 已移至 `main_ppo_v0.py`（deprecated，v0.9.0 移除），`main_ppo_sync.py` 已并入 V1 的 `PPOTrainerSync`。
 
 ## 主题文档
 
@@ -21,18 +22,19 @@
 | 10 | Ray 串联机制详解（进程编排 / 资源池 / 远程调用） | [10-Ray串联机制详解.md](10-Ray串联机制详解.md) |
 | 11 | 算法配置与跨 Worker 数据流转（输入/计算/输出/流转） | [11-算法配置与跨Worker数据流转.md](11-算法配置与跨Worker数据流转.md) |
 | 12 | decorator.py 设计与 dispatch 机制详解 | [12-decorator与dispatch机制详解.md](12-decorator与dispatch机制详解.md) |
-| 13 | 异步训练方案对比（主链路 / one_step_off / fully_async） | [13-异步训练方案对比.md](13-异步训练方案对比.md) |
+| 13 | 异步训练方案对比（V1 sync / colocate_async / separate_async） | [13-异步训练方案对比.md](13-异步训练方案对比.md) |
 | 14 | Ray 使用技法全景手册（全仓库 use-case / API cookbook） | [14-Ray使用技法全景手册.md](14-Ray使用技法全景手册.md) |
 | 15 | 训练后端（FSDP/Megatron）与优化器配置 | [15-训练后端与优化器配置.md](15-训练后端与优化器配置.md) |
 | 16 | 显存卸载与 vLLM 睡眠/唤醒机制（offload / sleep-wake / cudagraph） | [16-显存卸载与vLLM睡眠唤醒机制.md](16-显存卸载与vLLM睡眠唤醒机制.md) |
 
 ## 源码导航速查
 
-- 启动/编排：`verl/trainer/main_ppo_sync.py`、`verl/trainer/main_ppo.py`
-- 算法：`verl/trainer/ppo/core_algos.py`、`metric_utils.py`、`rollout_corr_helper.py`
+- 启动/编排：`verl/trainer/main_ppo.py`（V1 主入口，`trainer.use_v1=true`）、`verl/trainer/main_ppo_v0.py`（legacy，deprecated）
+- V1 trainer：`verl/trainer/ppo/v1/`（`trainer_base.py` 基类 + `trainer_sync.py` / `trainer_colocate_async.py` / `trainer_separate_async.py`）
+- 算法：`verl/trainer/ppo/core_algos.py`、`metric_utils.py`、`rollout_corr_helper.py`、`ppo/v1/utils.py`
 - 调度：`verl/single_controller/{base,ray}/`（`decorator.py` 看 dispatch）
-- 数据：`verl/protocol.py`、`verl/utils/transferqueue_utils.py`
+- 数据：`verl/protocol.py`、`verl/utils/transferqueue_utils.py`、`verl/utils/tensordict_utils.py`
 - 引擎：`verl/workers/engine/{fsdp,megatron,...}`、`verl/workers/engine_workers.py`
 - 生成：`verl/workers/rollout/{vllm,sglang,trtllm}_rollout/`、`llm_server.py`
-- 容错：`verl/utils/checkpoint/`、`verl/checkpoint_engine/`
+- 容错：`verl/utils/checkpoint/`、`verl/checkpoint_engine/`（含新增 `delta_checkpoint_engine.py`）
 - 算子：`verl/utils/kernel/`、`verl/models/mcore/`、`verl/models/transformers/`

@@ -29,14 +29,15 @@ RL 训练的 bug 往往不是"崩溃"而是"训练不涨/数值漂移"，所以�
 
 ```yaml
 global_profiler:
-  tool: nsight              # nsight(nsys) / torch / npu(mstx) / torch_memory
-  steps: [1, 5, 10]         # 只在这些 global_step 采集
+  tool: null                # null / nsight(nsys) / torch / npu(mstx) / torch_memory / precision_debugger
+  steps: null               # 只在指定的 global_step 采集，如 [1, 5, 10]
   profile_continuous_steps: false   # true 则连续区间采集
   save_path: outputs/profile
   global_tool_config:
     nsight: {discrete: false}        # discrete=true 则每个被装饰函数单独起停
+    precision_debugger: {...}        # msprobe 精度调试（stages: actor_update / compute_log_prob / ...）
 ```
-`_start_profiling`/`_stop_profiling`（main_ppo_sync.py:1170）按 step 触发，对 actor_rollout / ref / critic 三个 WorkerGroup 分别 `start_profile(role=..., profile_step=...)`。`torch_memory` 工具会 dump 显存快照，专门排 OOM。
+`_start_profiling`/`_stop_profiling`（trainer/ppo/v1/trainer_base.py:1278/1293）按 step 触发，对 actor_rollout / ref / critic 三个 WorkerGroup 分别 `start_profile(role=..., profile_step=...)`。`torch_memory` 工具会 dump 显存快照，专门排 OOM。
 
 ## 7.2 实用技巧（环境变量 / 配置 / 脚本）
 
