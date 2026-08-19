@@ -9,12 +9,11 @@
 set -xeuo pipefail
 
 # ---- user-adjustable ----
-n_gpus_per_node=${n_gpus_per_node:-8}
-trainer_nnodes=${trainer_nnodes:-8}
-rollout_nnodes=${rollout_nnodes:-0}
+n_gpus_per_node=8
+trainer_nnodes=8
 
 project_name='wuxibin_dapo'
-exp_name='deepseek_v4_flash_ep8_sp1_0802a'
+exp_name='deepseek_v4_flash_ep8_sp4_0804b'
 
 # ===================================== Algorithm =====================================
 adv_estimator=grpo
@@ -41,27 +40,27 @@ train_files=$DATA_ROOT/dataset/BytedTsinghua-SIA/DAPO-Math-17k/data/dapo-math-17
 test_files=$DATA_ROOT/dataset/aime25_test.parquet
 checkpoint_dir=$DATA_ROOT/checkpoint/$project_name/$exp_name
 
-train_batch_size=8
-ppo_mini_batch_size=8
+train_batch_size=128
+ppo_mini_batch_size=64
 n_resp_per_prompt=8
 n_resp_per_prompt_val=16
 enable_thinking=${enable_thinking:-True}
 
 # Training config
-usp_size=${usp_size:-8}
+usp_size=${usp_size:-4}
 expert_size=${expert_size:-8}
 use_remove_padding=True
 use_dynamic_bsz=True
 max_prompt_length=$((1024 * 2))
-max_response_length=$((1024 * 12))
+max_response_length=$((1024 * 8))
 actor_max_token_len_per_gpu=$(((max_prompt_length + max_response_length) / usp_size))
 
 # Inference config
 rollout_name=vllm
-infer_tp=1
-infer_dp=8
-infer_ep=8
-gpu_memory_utilization=0.5
+infer_tp=8
+infer_dp=1
+infer_ep=1
+gpu_memory_utilization=0.6
 # ---- end user-adjustable ----
 
 # ---- no user adjustment needed below ----
@@ -79,6 +78,7 @@ ENGINE_CONFIG=(
     actor_rollout_ref.actor.veomni.dsa_indexer_implementation=tilelang
     actor_rollout_ref.actor.veomni.dsa_attention_implementation=tilelang
     actor_rollout_ref.actor.veomni.mhc_implementation=tilelang
+    actor_rollout_ref.actor.veomni.router_replay.mode=R3
 )
 
 # Actor model config
@@ -93,6 +93,7 @@ ACTOR_CONFIG=(
     actor_rollout_ref.actor.clip_ratio_c=10.0
     actor_rollout_ref.actor.policy_loss.loss_mode=${loss_mode}
     actor_rollout_ref.actor.use_dynamic_bsz=$use_dynamic_bsz
+    actor_rollout_ref.actor.pad_to_length=True
     actor_rollout_ref.actor.ppo_mini_batch_size=$ppo_mini_batch_size
     actor_rollout_ref.actor.ppo_max_token_len_per_gpu=${actor_max_token_len_per_gpu}
     actor_rollout_ref.rollout.log_prob_max_token_len_per_gpu=${actor_max_token_len_per_gpu}
@@ -111,6 +112,7 @@ ROLLOUT_CONFIG=(
     actor_rollout_ref.rollout.val_kwargs.n=$n_resp_per_prompt_val
     actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=1
     actor_rollout_ref.rollout.log_prob_use_dynamic_bsz=$use_dynamic_bsz
+    actor_rollout_ref.rollout.enable_rollout_routing_replay=True
     +actor_rollout_ref.rollout.engine_kwargs.vllm.kv_cache_dtype=fp8
 )
 
@@ -130,8 +132,6 @@ DATA=(
     data.filter_overlong_prompts_workers=64
     data.truncation='error'
     +data.apply_chat_template_kwargs.enable_thinking=${enable_thinking}
-    data.continuous_token.enable=True
-    data.continuous_token.model_family=deepseekv4
 )
 
 TRAINER=(

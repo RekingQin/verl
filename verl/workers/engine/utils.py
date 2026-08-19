@@ -37,6 +37,15 @@ def enable_full_determinism(seed: int):
     os.environ["PYTHONHASHSEED"] = str(seed)
     os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":16:8"
     os.environ["FLASH_ATTENTION_DETERMINISTIC"] = "1"
+    os.environ["NCCL_DETERMINISTIC"] = "1"
+    os.environ["NCCL_ALGO"] = "Ring"
+    os.environ["NCCL_PROTO"] = "Simple"
+    # flash-attn's Triton cross-entropy kernel (used by logprobs_from_logits to
+    # compute log_probs) has a non-deterministic reduction that is NOT covered by
+    # FLASH_ATTENTION_DETERMINISTIC (only governs attention kernels' backward) nor
+    # by torch.use_deterministic_algorithms (Triton custom ops don't trigger
+    # warn_only). Force the pure-PyTorch log_softmax+gather path instead.
+    os.environ.setdefault("VERL_DISABLE_FLASH_ATTN_CE", "1")
     if is_npu_available:
         # The environment variable required to enable deterministic mode on Ascend NPUs.
         os.environ["HCCL_DETERMINISTIC"] = "true"
@@ -52,6 +61,32 @@ def enable_full_determinism(seed: int):
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
     torch.backends.cudnn.enabled = False
+
+
+def pad_packed_inputs(
+    input_ids_rmpad: torch.Tensor,
+    position_ids_rmpad: torch.Tensor | None,
+    pad_size: int,
+    pad_value: float = 0,
+):
+    """Right-pad a packed ``(1, total_nnz)`` batch by ``pad_size`` tokens.
+
+    Mirrors the padding :func:`verl.utils.ulysses.ulysses_pad` applies to reach a multiple of the
+    sequence-parallel size: the appended ``position_ids`` restart from 0, so the pad tokens form
+    one trailing varlen segment instead of extending the last real sequence.
+    """
+    if pad_size <= 0:
+        return input_ids_rmpad, position_ids_rmpad
+
+    input_ids_rmpad = torch.nn.functional.pad(input_ids_rmpad, (0, pad_size), value=pad_value)
+    if position_ids_rmpad is not None:
+        pad_position_ids = torch.arange(
+            pad_size, dtype=position_ids_rmpad.dtype, device=position_ids_rmpad.device
+        ).unsqueeze(0)
+        if position_ids_rmpad.dim() == 3:  # (rope_dim, 1, total_nnz) mRoPE layout
+            pad_position_ids = pad_position_ids.unsqueeze(0).repeat(position_ids_rmpad.size(0), 1, 1)
+        position_ids_rmpad = torch.cat((position_ids_rmpad, pad_position_ids), dim=-1)
+    return input_ids_rmpad, position_ids_rmpad
 
 
 def prepare_micro_batches(

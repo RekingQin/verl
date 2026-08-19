@@ -22,11 +22,10 @@ from verl.trainer.config import CheckpointConfig, RolloutCorrectionConfig
 from verl.utils.profiler.config import ProfilerConfig
 from verl.utils.qat import QATConfig
 
-from .checkpoint import McoreCheckpointConfig, MindSpeedCheckpointConfig
+from .checkpoint import McoreCheckpointConfig
 from .engine import (
     FSDPEngineConfig,
     McoreEngineConfig,
-    MindSpeedEngineConfig,
     TorchtitanEngineConfig,
     VeOmniEngineConfig,
 )
@@ -42,7 +41,6 @@ __all__ = [
     "VeOmniActorConfig",
     "QATConfig",
     "TorchTitanActorConfig",
-    "MindSpeedActorConfig",
 ]
 
 
@@ -302,6 +300,8 @@ class FSDPActorConfig(ActorConfig):
         entropy_from_logits_with_chunking (bool): Whether to compute entropy from logits
             with chunking for memory efficiency.
         entropy_checkpointing (bool): Whether to use gradient checkpointing for entropy computation.
+        pad_to_length (bool): Whether to pad every packed micro-batch to a static token count.
+            Forwarded to ``fsdp_config.pad_to_length``, which is what the engine reads.
         fsdp_config (dict[str, Any]): Configuration for FSDP settings.
         use_remove_padding (bool): Whether to remove padding tokens in inputs during training
     """
@@ -312,6 +312,7 @@ class FSDPActorConfig(ActorConfig):
     entropy_from_logits_with_chunking: bool = False
     entropy_from_logits_chunk_size: int = 2048
     entropy_checkpointing: bool = False
+    pad_to_length: bool = False
     fsdp_config: FSDPEngineConfig = field(default_factory=FSDPEngineConfig)
     use_remove_padding: bool = False
     use_rollout_log_probs: bool = False
@@ -351,11 +352,14 @@ class VeOmniActorConfig(ActorConfig):
     Args:
         strategy (str): Training strategy set to 'veomni' for VeOmni parallelism.
         veomni (dict[str, Any]): Configuration for VeOmni settings.
+        pad_to_length (bool): Whether to pad every packed micro-batch to a static token count.
+            Forwarded to ``veomni.pad_to_length``, which is what the engine reads.
         use_remove_padding (bool): Whether to remove padding tokens in inputs during training
     """
 
     strategy: str = "veomni"
     veomni: VeOmniEngineConfig = field(default_factory=VeOmniEngineConfig)
+    pad_to_length: bool = False
     use_remove_padding: bool = False
     use_rollout_log_probs: bool = False
 
@@ -395,30 +399,3 @@ class TorchTitanActorConfig(ActorConfig):
         """Validate TorchTitan actor configuration parameters."""
         super().__post_init__()
         self.engine = self.torchtitan
-
-
-@dataclass
-class MindSpeedActorConfig(ActorConfig):
-    """Configuration for mindspeed actor models.
-
-    The inheritance from BaseConfig provides omegaconf.DictConfig-like interface for a dataclass config.
-
-    Args:
-        strategy (str): Training strategy set to 'mindspeed' for mindspeed parallelism.
-        mindspeed (dict[str, Any]): Configuration for mindspeed parallelism settings.
-        profile (dict[str, Any]): Configuration for profiling settings.
-        use_rollout_log_probs (bool): Whether to use log probabilities from rollout engine.
-        checkpoint (MindSpeedCheckpointConfig): MindSpeed-specific checkpoint config
-            (inherits ``mbridge_config`` from :class:`McoreCheckpointConfig`).
-    """
-
-    strategy: str = "mindspeed"
-    mindspeed: MindSpeedEngineConfig = field(default_factory=MindSpeedEngineConfig)
-    profile: dict[str, Any] = field(default_factory=dict)
-    use_rollout_log_probs: bool = False
-    checkpoint: MindSpeedCheckpointConfig = field(default_factory=MindSpeedCheckpointConfig)
-
-    def __post_init__(self):
-        """Validate MindSpeed actor configuration parameters."""
-        super().__post_init__()
-        self.engine = self.mindspeed
