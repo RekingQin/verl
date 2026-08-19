@@ -26,6 +26,8 @@
 | 14 | Ray 使用技法全景手册（全仓库 use-case / API cookbook） | [14-Ray使用技法全景手册.md](14-Ray使用技法全景手册.md) |
 | 15 | 训练后端（FSDP/Megatron）与优化器配置 | [15-训练后端与优化器配置.md](15-训练后端与优化器配置.md) |
 | 16 | 显存卸载与 vLLM 睡眠/唤醒机制（offload / sleep-wake / cudagraph） | [16-显存卸载与vLLM睡眠唤醒机制.md](16-显存卸载与vLLM睡眠唤醒机制.md) |
+| 17 | workers 模块设计与运行机制（engine_workers / engine / rollout / reward_manager / utils） | [17-workers模块设计与运行机制.md](17-workers模块设计与运行机制.md) |
+| 18 | models 模块设计与运行机制（transformers monkey_patch / mcore 集成 / 权重转换） | [18-models模块设计与运行机制.md](18-models模块设计与运行机制.md) |
 
 ## 源码导航速查
 
