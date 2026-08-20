@@ -28,6 +28,7 @@
 | 16 | 显存卸载与 vLLM 睡眠/唤醒机制（offload / sleep-wake / cudagraph） | [16-显存卸载与vLLM睡眠唤醒机制.md](16-显存卸载与vLLM睡眠唤醒机制.md) |
 | 17 | workers 模块设计与运行机制（engine_workers / engine / rollout / reward_manager / utils） | [17-workers模块设计与运行机制.md](17-workers模块设计与运行机制.md) |
 | 18 | models 模块设计与运行机制（transformers monkey_patch / mcore 集成 / 权重转换） | [18-models模块设计与运行机制.md](18-models模块设计与运行机制.md) |
+| 19 | checkpoint_engine 模块设计与运行机制（Actor→Rollout 权重同步统一层：NCCL/HCCL/NIXL/Mooncake/Kimi/Delta） | [19-checkpoint_engine模块设计与运行机制.md](19-checkpoint_engine模块设计与运行机制.md) |
 
 ## 源码导航速查
 
